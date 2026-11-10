@@ -186,11 +186,33 @@ PNG внутрь `Payload/*.app` и **падает**, если их нет. Ге
 выставляет `10.0`, а приложению нужен 15+. На установку не влияет, но после неё
 может быть вылет на старте.
 
+**Починить уже скачанный `.ipa` без пересборки.** Если не хочется гонять CI ещё
+раз, `patch_ipa.py` правит бандл прямо на Windows (нужен только Python):
+
+```bash
+python3 ios/patch_ipa.py INPUT.ipa OUTPUT.ipa --bundle-id com.maksim.overlay.2026
+```
+
+Он добавит PNG-иконки, `CFBundleIcons`, уберёт `UIRequiredDeviceCapabilities`,
+поставит `ITSAppUsesNonExemptEncryption = false`, заменит Bundle ID и перепакует
+чистый `Payload/*.app` без `__MACOSX`. Файл остаётся **неподписанным** — дальше
+подпись в ESign. Диагностика «голого» бандла, снятая с реального артефакта:
+
+```
+Payload/ImGuiOverlayIOS.app/
+  ImGuiOverlayIOS   1 044 896 B   (arm64, LC_BUILD_VERSION platform 2 = iOS, minos 15.0, SDK 18.5)
+  Info.plist            1 242 B   (CFBundleIcons = None, capabilities = ['metal','arm64'])
+  PkgInfo                   8 B
+```
+
+То есть Mach-O был полностью корректен, проблема была именно в отсутствии иконки
+и capability-ключа. Это и объясняет затемнённый плейсхолдер на домашнем экране.
+
 **Обход без ESign:** **Sideloadly** / **AltStore** на ПК со своим бесплатным Apple
 ID — сами выпускают Development-сертификат и профиль с UDID твоего iPhone и ставят
-по кабелю/Wi-Fi. Скармливаешь тот же `ImGuiOverlayIOS-device-unsigned.ipa`.
-Подпись на 7 дней, переподпись одним кликом. Их лог пишет конкретную причину
-(`ApplicationVerificationFailed`, `0xe8008015` и т.п.) вместо молчания.
+по кабелю/Wi-Fi. Скармливаешь тот же device- IPA. Подпись на 7 дней, переподпись
+одним кликом. Их лог пишет конкретную причину (`ApplicationVerificationFailed`,
+`0xe8008015` и т.п.) вместо молчания.
 
 ## Быстрый старт (симулятор, без аккаунта)
 

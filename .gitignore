@@ -7,6 +7,7 @@
 /ios/build/ipa/
 /ios/*.log
 /ios/build-info.txt
+*.ipa
 
 # editor / OS
 .DS_Store
