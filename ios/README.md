@@ -33,14 +33,23 @@ WSL при этом **полезен для своего**: проверять �
 `.github/workflows/ios-build.yml`: он поднимает `macos-15`, собирает проект и
 выкладывает готовый архив артефактом. Ты только пушишь с Windows и скачиваешь.
 
+Репозиторий уже проинициализирован локально (ветка `main`, коммиты готовы), так что
+**просто запусти `push.bat` двойным кликом**, введи логин и токен.
+
+⚠️ GitHub с 2021 года **не принимает пароль**, нужен Personal Access Token:
+`https://github.com/settings/tokens/new?scopes=repo` → classic, галочка `repo` →
+Generate token → скопировать `ghp_...`. Это его и вставляй, не пароль аккаунта.
+
+В этой сборке PortableGit прописан `credential.helper=manager`, но самого
+`git-credential-manager` нет — поэтому браузерный логин не открывается и git падает
+с `Invalid username or token`. `push.bat` обходит это: отключает системный конфиг
+через `GIT_CONFIG_NOSYSTEM=1` и передаёт токен прямо в URL пуша. Токен **не**
+сохраняется в `.git/config` (сразу после пуша `remote` перезаписывается без него).
+
+Если пушить вручную, та же логика одной командой:
+
 ```bash
-cd "A:/standoff 2 1.1.0/imgui-overlay-demo"
-git init
-git add .
-git commit -m "ImGui overlay: Win32 + iOS"
-git branch -M main
-git remote add origin https://github.com/<твой-логин>/imgui-overlay-demo.git   # создай репо на github.com заранее
-git push -u origin main
+GIT_CONFIG_NOSYSTEM=1 git push "https://USER:TOKEN@github.com/USER/imgui-overlay-demo.git" main
 ```
 
 Дальше: **репозиторий → Actions → Build iOS overlay → Run workflow** → после
