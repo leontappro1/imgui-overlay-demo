@@ -42,6 +42,17 @@ jobs:
           path: ios/build-sim.log
           if-no-files-found: warn
 
+      # Annotations are readable through the public checks API even without a token.
+      - name: Publish build log into annotations
+        if: failure()
+        working-directory: ios
+        run: |
+          if [ -f build-sim.log ]; then
+            tail -n 40 build-sim.log | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::$line"
+            done
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

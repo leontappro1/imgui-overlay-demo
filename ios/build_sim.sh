@@ -16,19 +16,27 @@ cmake -S . -B build-sim -G Xcode \
   -DDEV_TEAM=""
 
 echo "==> xcodebuild (unsigned)"
-# -target, not -scheme: CMake's Xcode generator does not always emit a shared
-# scheme, and "Scheme X is not currently configured for the build action" is
-# the most common CI failure for CMake-generated iOS projects.
-xcodebuild \
-  -project build-sim/ImGuiOverlayIOS.xcodeproj \
-  -target ImGuiOverlayIOS \
-  -configuration Release \
-  -destination 'generic/platform=iOS Simulator' \
-  -derivedDataPath build-sim/dd \
-  CODE_SIGNING_ALLOWED=NO \
-  CODE_SIGNING_REQUIRED=NO \
-  CODE_SIGN_IDENTITY="" \
-  build 2>&1 | tee build-sim.log
+: > build-sim.log
+
+# -sdk is the reliable form for a CMake-generated project built with -target.
+# "-destination 'generic/platform=iOS Simulator'" together with -target made
+# xcodebuild exit 64 (EX_USAGE) on the macOS runner, so it is only used as a
+# fallback together with -scheme.
+run_xcodebuild() {
+  xcodebuild \
+    -project build-sim/ImGuiOverlayIOS.xcodeproj \
+    -configuration Release \
+    -derivedDataPath build-sim/dd \
+    CODE_SIGNING_ALLOWED=NO \
+    CODE_SIGNING_REQUIRED=NO \
+    "$@" \
+    build 2>&1 | tee -a build-sim.log
+}
+
+if ! run_xcodebuild -target ImGuiOverlayIOS -sdk iphonesimulator; then
+  echo "==> -target/-sdk failed, retrying with -scheme/-destination" | tee -a build-sim.log
+  run_xcodebuild -scheme ImGuiOverlayIOS -destination 'generic/platform=iOS Simulator'
+fi
 
 # CMake's Xcode generator puts products in build-sim/Release/ (CONFIGURATION_BUILD_DIR),
 # NOT in DerivedData/Build/Products. Search the whole build tree.
