@@ -100,9 +100,18 @@ cd ios && ./build_ios.sh simulator && open build-simulator/ImGuiOverlayIOS.xcode
 Локально `.ipa` на Windows не собрать (Xcode только на macOS, WSL не помогает —
 это Linux, а не macOS). Но **с Windows собрать можно через CI**: в
 `.github/workflows/ios-build.yml` лежит воркфлоу для macOS-раннера GitHub Actions,
-который собирает проект и выкладывает архив артефактом. Пуш → Actions →
-Run workflow → скачать. Без Mac и без Apple-аккаунта для симуляторной сборки.
-Подробности и таблица вариантов — в `ios/README.md`.
+который собирает проект и выкладывает архивы артефактами. Пуш → Actions →
+Run workflow → скачать. Без Mac и без Apple-аккаунта:
+
+| Джоба | Артефакт | Назначение |
+|---|---|---|
+| `simulator` | `imgui-overlay-ios-simulator-ipa` | только симулятор Xcode |
+| `device_unsigned` | `imgui-overlay-ios-device-unsigned-ipa` | `arm64 / iphoneos`, подписать в **ESign** / Sideloadly / AltStore и поставить на iPhone |
+
+Симуляторный `.ipa` на телефон **не ставится**: у бинарника платформа `iOSSimulator`
+в Mach-O, подпись её не меняет. Для ESign бери именно `device-unsigned`.
+Пошагово про скачивание, `.p12` + `.mobileprovision`, подпись и «Доверять» —
+в `ios/README.md`, раздел «Скачать и поставить на iPhone через ESign».
 
 ## Куда дальше
 

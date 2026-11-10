@@ -2,8 +2,10 @@
 /build/
 /ios/build-*/
 /ios/out/
+/ios/out-dev/
 /ios/*.xcarchive/
 /ios/build/ipa/
+/ios/*.log
 
 # editor / OS
 .DS_Store

@@ -60,6 +60,44 @@ jobs:
           path: ios/out/*.ipa
           if-no-files-found: error
 
+  # ------------------------------------------------------------------ device slice, unsigned
+  # This is the one you sign with ESign / Sideloadly / AltStore and put on a phone.
+  device_unsigned:
+    name: Device .ipa (unsigned, for ESign / Sideloadly)
+    runs-on: macos-15
+    continue-on-error: true          # a failure here must not hide the green simulator build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build + pack
+        working-directory: ios
+        run: bash build_device_unsigned.sh
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-device-build-log
+          path: ios/build-dev.log
+          if-no-files-found: warn
+
+      - name: Publish build log into annotations
+        if: failure()
+        working-directory: ios
+        run: |
+          if [ -f build-dev.log ]; then
+            tail -n 40 build-dev.log | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::$line"
+            done
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: imgui-overlay-ios-device-unsigned-ipa
+          path: ios/out-dev/*.ipa
+          if-no-files-found: error
+
   # ------------------------------------------------------------------ opt-in, needs secrets
   # Required repository secrets / variables:
   #   IOS_CERT_P12_BASE64  - Apple Distribution/Development .p12, base64
