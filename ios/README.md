@@ -52,8 +52,9 @@ Generate token → скопировать `ghp_...`. Это его и встав
 GIT_CONFIG_NOSYSTEM=1 git push "https://USER:TOKEN@github.com/USER/imgui-overlay-demo.git" main
 ```
 
-Дальше: **репозиторий → Actions → Build iOS overlay → Run workflow** → после
-сборки внизу страницы запуска появится блок **Artifacts**, и там уже **два** архива:
+Дальше пуш сам запускает сборку (можно и вручную: **репозиторий → Actions →
+Build iOS overlay → Run workflow**). После сборки внизу страницы запуска появится
+блок **Artifacts**, и там уже **два** архива:
 
 | Артефакт | Внутри | Куда |
 |---|---|---|
@@ -91,7 +92,7 @@ cd ios && ./build_device_unsigned.sh   # -> ios/out-dev/ImGuiOverlayIOS-device-u
 По шагам, от пуша до иконки на домашнем экране.
 
 **1. Взять правильный `.ipa`.** После пуша `push.bat` открой
-`https://github.com/<твой-логин>/imgui-overlay-demo/actions`, дождись зелёной
+`https://github.com/leontappro1/imgui-overlay-demo/actions`, дождись зелёной
 джобы `Device .ipa (unsigned, for ESign / Sideloadly)` и скачай артефакт
 `imgui-overlay-ios-device-unsigned-ipa`. Распакуй внешний zip (на телефоне это
 «Файлы» → тап по архиву) — получится `ImGuiOverlayIOS-device-unsigned.ipa`.
@@ -139,7 +140,7 @@ cd ios && ./build_device_unsigned.sh   # -> ios/out-dev/ImGuiOverlayIOS-device-u
 
 ```bash
 cd ios
-chmod +x build_ios.sh build_ipa.sh
+chmod +x build_ios.sh build_ipa.sh build_sim.sh build_device_unsigned.sh
 ./build_ios.sh simulator
 open build-simulator/ImGuiOverlayIOS.xcodeproj
 ```
