@@ -11,7 +11,7 @@ cd "$(dirname "$0")"
 mkdir -p build
 xcodebuild \
   -project build-device/ImGuiOverlayIOS.xcodeproj \
-  -scheme ImGuiOverlayIOS \
+  -target ImGuiOverlayIOS \
   -configuration Release \
   -destination 'generic/platform=iOS' \
   -archivePath "$(pwd)/build/ImGuiOverlay.xcarchive" \

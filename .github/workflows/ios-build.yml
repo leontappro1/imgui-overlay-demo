@@ -34,6 +34,14 @@ jobs:
         working-directory: ios
         run: bash build_sim.sh
 
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: ios/build-sim.log
+          if-no-files-found: warn
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -110,7 +118,7 @@ jobs:
 
           xcodebuild \
             -project build-device/ImGuiOverlayIOS.xcodeproj \
-            -scheme ImGuiOverlayIOS \
+            -target ImGuiOverlayIOS \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$PWD/build/ImGuiOverlay.xcarchive" \

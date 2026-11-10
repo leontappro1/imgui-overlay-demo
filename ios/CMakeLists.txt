@@ -47,6 +47,8 @@ target_link_libraries(ImGuiOverlayIOS PRIVATE
 set_target_properties(ImGuiOverlayIOS PROPERTIES
     MACOSX_BUNDLE YES
     MACOSX_BUNDLE_INFO_PLIST "${HERE}/Info.plist"
+    # Generate a shared Xcode scheme too: some xcodebuild invocations need one.
+    XCODE_GENERATE_SCHEME TRUE
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${BUNDLE_ID}"
     XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${DEV_TEAM}"
     XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"

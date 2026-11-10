@@ -29,7 +29,7 @@ echo "Xcode project: $(pwd)/build-$MODE/ImGuiOverlayIOS.xcodeproj"
 echo "Open it, pick a simulator/device, Cmd+R. Or:"
 echo
 echo "  xcodebuild -project build-$MODE/ImGuiOverlayIOS.xcodeproj \\"
-echo "    -scheme ImGuiOverlayIOS -configuration Debug \\"
+echo "    -target ImGuiOverlayIOS -configuration Debug \\"
 echo "    -destination '$DEST' build"
 echo
 echo "For an .ipa run ./build_ipa.sh instead."
