@@ -78,7 +78,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ios-device-build-log
-          path: ios/build-dev.log
+          path: |
+            ios/build-dev.log
+            ios/build-info.txt
           if-no-files-found: warn
 
       - name: Publish build log into annotations
@@ -89,6 +91,18 @@ jobs:
             tail -n 40 build-dev.log | while IFS= read -r line; do
               [ -n "$line" ] && echo "::error::$line"
             done
+          fi
+
+      # Public checks API can read annotations without a GitHub token, so this
+      # gives us ground truth about the built bundle (platform, icons, plist).
+      - name: Publish bundle diagnostics
+        if: always()
+        working-directory: ios
+        run: |
+          if [ -f build-info.txt ]; then
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::notice::$line"
+            done < build-info.txt
           fi
 
       - name: Upload artifact

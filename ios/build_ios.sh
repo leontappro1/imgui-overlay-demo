@@ -21,7 +21,7 @@ cmake -S . -B "build-$MODE" -G Xcode \
   -DCMAKE_OSX_SYSROOT="$SYSROOT" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
   -DDEV_TEAM="${DEV_TEAM:-}" \
-  -DBUNDLE_ID="${BUNDLE_ID:-com.example.imguioverlay}" \
+  -DBUNDLE_ID="${BUNDLE_ID:-com.maksim.imguioverlay}" \
   "${ARCH_ARGS[@]}"
 
 echo

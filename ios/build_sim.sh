@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-BUNDLE_ID="${BUNDLE_ID:-com.example.imguioverlay}"
+BUNDLE_ID="${BUNDLE_ID:-com.maksim.imguioverlay}"
 
 echo "==> cmake -G Xcode (iOS Simulator)"
 cmake -S . -B build-sim -G Xcode \

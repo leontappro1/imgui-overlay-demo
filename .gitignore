@@ -6,6 +6,7 @@
 /ios/*.xcarchive/
 /ios/build/ipa/
 /ios/*.log
+/ios/build-info.txt
 
 # editor / OS
 .DS_Store
