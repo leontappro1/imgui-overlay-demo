@@ -12,11 +12,16 @@ echo   STEP 2  Repo must exist and be EMPTY: https://github.com/new
 echo           name: imgui-overlay-demo  (no README, no .gitignore, no license)
 echo.
 echo   GitHub no longer accepts passwords. Use the TOKEN, not your password.
-echo   (the token is visible while typing - don't share your screen)
+echo   Token input is HIDDEN. Never paste a token into a screenshot or chat.
 echo.
 set "GHUSER=leontappro1"
 set /p "GHUSER=GitHub username [%GHUSER%]: "
-set /p "GHTOKEN=Paste token (ghp_...): "
+set "GHTOKEN="
+for /f "delims=" %%T in ('powershell -NoProfile -Command "$s=Read-Host 'Paste token (hidden)' -AsSecureString; [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))" 2^>nul') do set "GHTOKEN=%%T"
+if "%GHTOKEN%"=="" (
+  echo Hidden input unavailable - visible fallback, do not share your screen.
+  set /p "GHTOKEN=Paste token (visible): "
+)
 if "%GHTOKEN%"=="" (echo Cancelled. & exit /b 1)
 
 git remote remove origin >nul 2>&1
