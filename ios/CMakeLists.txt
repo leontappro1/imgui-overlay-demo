@@ -1,0 +1,59 @@
+cmake_minimum_required(VERSION 3.20)
+project(ImGuiOverlayIOS LANGUAGES CXX OBJCXX)
+
+# ---------------------------------------------------------------- user settings
+set(DEV_TEAM  "" CACHE STRING "Apple Developer Team ID (leave empty for simulator-only builds)")
+set(BUNDLE_ID "com.example.imguioverlay" CACHE STRING "Bundle identifier")
+
+# ---------------------------------------------------------------- paths
+set(HERE       "${CMAKE_CURRENT_LIST_DIR}")
+set(IMGUI_DIR  "${HERE}/third_party/imgui")
+set(IMGUI_SRC  "${IMGUI_DIR}")
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ---------------------------------------------------------------- sources
+add_executable(ImGuiOverlayIOS MACOSX_BUNDLE
+    "${HERE}/main.mm"
+    "${HERE}/shared/ui.cpp"
+    "${IMGUI_SRC}/imgui.cpp"
+    "${IMGUI_SRC}/imgui_draw.cpp"
+    "${IMGUI_SRC}/imgui_tables.cpp"
+    "${IMGUI_SRC}/imgui_widgets.cpp"
+    "${IMGUI_SRC}/imgui_demo.cpp"
+    "${IMGUI_DIR}/backends/imgui_impl_metal.mm"
+)
+
+target_include_directories(ImGuiOverlayIOS PRIVATE
+    "${IMGUI_DIR}"
+    "${IMGUI_DIR}/backends"
+    "${HERE}/shared"
+)
+
+# imgui_impl_osx.* in backends/ is macOS-only and deliberately NOT compiled here.
+# On iOS there is no separate imgui_impl_ios backend in ImGui 1.92: touch input
+# is mapped in main.mm, exactly like the official example_apple_metal does.
+
+target_link_libraries(ImGuiOverlayIOS PRIVATE
+    "-framework Foundation"
+    "-framework UIKit"
+    "-framework Metal"
+    "-framework MetalKit"
+    "-framework QuartzCore"
+    "-framework CoreGraphics"
+)
+
+set_target_properties(ImGuiOverlayIOS PROPERTIES
+    MACOSX_BUNDLE YES
+    MACOSX_BUNDLE_INFO_PLIST "${HERE}/Info.plist"
+    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${BUNDLE_ID}"
+    XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${DEV_TEAM}"
+    XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
+    XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "15.0"
+    XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+    XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC "YES"
+    XCODE_ATTRIBUTE_CLANG_CXX_LANGUAGE_STANDARD "c++17"
+    XCODE_ATTRIBUTE_CLANG_CXX_LIBRARY "libc++"
+    XCODE_ATTRIBUTE_SUPPORTED_PLATFORMS "iphoneos iphonesimulator"
+)

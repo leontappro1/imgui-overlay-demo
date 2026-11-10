@@ -1,0 +1,13 @@
+# local build output (the ready exe stays on disk, just not in git)
+/build/
+/ios/build-*/
+/ios/out/
+/ios/*.xcarchive/
+/ios/build/ipa/
+
+# editor / OS
+.DS_Store
+*.user
+*.swp
+.vs/
+.idea/
