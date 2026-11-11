@@ -8,10 +8,14 @@
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <AVFoundation/AVFoundation.h>
+#import <AVKit/AVKit.h>
 
 #include "imgui.h"
 #include "imgui_impl_metal.h"
 #include "ui.h"
+
+#import "pip_hud.h"
 
 // ---------------------------------------------------------------- platform state
 static bool s_opaqueBackground = false;   // MTKView.opaque
@@ -123,6 +127,21 @@ static overlay::PlatformHooks g_hooks;
     self.mtkView.userInteractionEnabled = NO;   // touches are handled by the VC below
     [root addSubview:self.mtkView];
 
+    // Button that floats the HUD above every other app (picture in picture).
+    UIButton* pipButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [pipButton setTitle:@"> HUD above the screen (PiP)" forState:UIControlStateNormal];
+    pipButton.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+    pipButton.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.85];
+    pipButton.layer.cornerRadius = 10.0;
+    pipButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [pipButton addTarget:self action:@selector(togglePictureInPicture:) forControlEvents:UIControlEventTouchUpInside];
+    [root addSubview:pipButton];
+    [NSLayoutConstraint activateConstraints:@[
+        [pipButton.topAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.topAnchor constant:12],
+        [pipButton.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],
+        [pipButton.heightAnchor constraintEqualToConstant:44],
+    ]];
+
     self.view = root;
     s_mtkView = self.mtkView;
 }
@@ -135,6 +154,33 @@ static overlay::PlatformHooks g_hooks;
     ApplyViewSettings();
     overlay::AddLog("overlay initialised (iOS / Metal)");
     overlay::AddLog("device: %s", [[self.device name] UTF8String]);
+
+    [[PipHudController sharedController] configureWithDevice:self.device queue:self.commandQueue];
+    overlay::AddLog("PiP overlay: %s",
+                    [AVPictureInPictureController isPictureInPictureSupported] ? "supported" : "NOT supported");
+}
+
+// ---------------------------------------------------------------- floating HUD
+- (void)togglePictureInPicture:(UIButton*)sender
+{
+    PipHudController* pip = [PipHudController sharedController];
+
+    if (pip.isRunning)
+    {
+        [pip stop];
+        [sender setTitle:@"> HUD above the screen (PiP)" forState:UIControlStateNormal];
+        return;
+    }
+
+    NSError* error = nil;
+    if ([pip start:&error])
+    {
+        [sender setTitle:@"Stop HUD (PiP)" forState:UIControlStateNormal];
+    }
+    else
+    {
+        overlay::AddLog("PiP start failed: %s", [[error localizedDescription] UTF8String]);
+    }
 }
 
 // ---------------------------------------------------------------- frame

@@ -16,6 +16,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---------------------------------------------------------------- sources
 add_executable(ImGuiOverlayIOS MACOSX_BUNDLE
     "${HERE}/main.mm"
+    "${HERE}/pip_hud.mm"
     "${HERE}/shared/ui.cpp"
     "${IMGUI_SRC}/imgui.cpp"
     "${IMGUI_SRC}/imgui_draw.cpp"
@@ -51,6 +52,10 @@ target_link_libraries(ImGuiOverlayIOS PRIVATE
     "-framework MetalKit"
     "-framework QuartzCore"
     "-framework CoreGraphics"
+    "-framework CoreMedia"
+    "-framework CoreVideo"
+    "-framework AVFoundation"
+    "-framework AVKit"
 )
 
 set_target_properties(ImGuiOverlayIOS PROPERTIES
