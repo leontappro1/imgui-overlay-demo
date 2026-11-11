@@ -7,6 +7,9 @@
 #include <windows.h>
 #include <GL/gl.h>
 
+#include <cwchar>
+#include <cstdio>
+
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_opengl3.h"
@@ -68,12 +71,22 @@ static HGLRC CreateGLContext(HDC hdc)
 static bool g_topmost = true;
 static bool g_clickThrough = false;
 static bool g_vsync = true;
+static bool g_hudMode = false;   // --hud: transparent fullscreen HUD overlay
 
 static void ApplyWindowStyles(HWND hwnd)
 {
     LONG ex = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-    ex &= ~(WS_EX_TRANSPARENT | WS_EX_LAYERED);
-    if (g_clickThrough) ex |= (WS_EX_TRANSPARENT | WS_EX_LAYERED);
+    ex &= ~WS_EX_TRANSPARENT;
+    if (g_hudMode)
+    {
+        // WS_EX_LAYERED + colour key is what makes the HUD window see-through.
+        ex |= WS_EX_LAYERED;
+    }
+    else
+    {
+        ex &= ~WS_EX_LAYERED;
+    }
+    if (g_clickThrough) ex |= WS_EX_TRANSPARENT;
     SetWindowLongPtr(hwnd, GWL_EXSTYLE, ex);
     SetWindowPos(hwnd, g_topmost ? HWND_TOPMOST : HWND_NOTOPMOST,
                  0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -90,12 +103,18 @@ static overlay::PlatformHooks MakeHooks(HWND hwnd)
 {
     overlay::PlatformHooks h = {};
     h.platform_line = "Win32 / OpenGL 3.0 / MinGW-w64";
-    h.hotkeys_line  = "INSERT click-through  |  F1 demo  |  F2 hide  |  F12 quit";
+    h.hotkeys_line  = g_hudMode
+        ? "INSERT click-through  |  F1 demo  |  F2 hide  |  F12 quit  (global hotkeys)"
+        : "INSERT click-through  |  F1 demo  |  F2 hide  |  F12 quit";
     h.backend_name  = "Win32 + OpenGL3";
     h.compiler_name = "MinGW-w64 GCC";
-    h.window_note   = "Click-through uses WS_EX_TRANSPARENT | WS_EX_LAYERED, "
-                      "the same mechanism every desktop overlay uses. "
-                      "Turn it off to interact with the widgets again.";
+    h.window_note   = g_hudMode
+        ? "HUD mode: a transparent fullscreen window drawn on top of the desktop. "
+          "It runs in its own process and only paints pixels - it never reads or "
+          "touches another application's memory."
+        : "Click-through uses WS_EX_TRANSPARENT | WS_EX_LAYERED, "
+          "the same mechanism every desktop overlay uses. "
+          "Turn it off to interact with the widgets again.";
     h.toggles[0] = { "always on top", &g_topmost };
     h.toggles[1] = { "click-through", &g_clickThrough };
     h.toggles[2] = { "vsync", &g_vsync };
@@ -106,6 +125,43 @@ static overlay::PlatformHooks MakeHooks(HWND hwnd)
 }
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+
+// ---------------------------------------------------------------- HUD overlay
+// A compact always-on-top readout drawn in the corner of a fully transparent
+// window. It lives in its own process and never touches another application:
+// it only draws on top of the desktop.
+static void DrawHUD()
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    ImGui::SetNextWindowPos(ImVec2(24, 24), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowBgAlpha(0.85f);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar
+                                 | ImGuiWindowFlags_NoResize
+                                 | ImGuiWindowFlags_NoMove
+                                 | ImGuiWindowFlags_NoSavedSettings
+                                 | ImGuiWindowFlags_NoScrollbar
+                                 | ImGuiWindowFlags_NoInputs;
+
+    ImGui::Begin("##hud", nullptr, flags);
+    {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        const float fps = overlay::GetFPS();
+
+        ImGui::TextColored(ImVec4(0.20f, 0.85f, 0.95f, 1.0f), "ImGui HUD");
+        ImGui::Separator();
+        ImGui::Text("fps      %.1f   (%.2f ms)", fps,
+                    1000.0f / (fps > 0.01f ? fps : 1.0f));
+        ImGui::Text("uptime   %llu s",
+                    (unsigned long long)(GetTickCount64() / 1000ULL));
+        ImGui::Text("time     %02d:%02d:%02d", st.wHour, st.wMinute, st.wSecond);
+        ImGui::Text("cursor   %.0f, %.0f", io.MousePos.x, io.MousePos.y);
+        ImGui::Text("screen   %.0f x %.0f", io.DisplaySize.x, io.DisplaySize.y);
+        ImGui::TextDisabled("INSERT click-through | F2 menu | F12 quit");
+    }
+    ImGui::End();
+}
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -118,7 +174,25 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             glViewport(0, 0, LOWORD(lp), HIWORD(lp));
         return 0;
 
+    case WM_HOTKEY:
+        // Global hotkeys: the overlay window does not need keyboard focus.
+        switch (wp)
+        {
+        case 1:
+            g_clickThrough = !g_clickThrough;
+            ApplyWindowStyles(hwnd);
+            overlay::AddLog("click-through: %s", g_clickThrough ? "ON" : "OFF");
+            return 0;
+        case 2: overlay::ToggleDemo();  return 0;
+        case 3: overlay::ToggleMenu();  return 0;
+        case 4: PostQuitMessage(0);     return 0;
+        }
+        return 0;
+
     case WM_KEYDOWN:
+        // In HUD mode the global hotkeys already handle these; handling them
+        // twice would toggle the menu on and straight back off.
+        if (g_hudMode) return 0;
         if (wp == VK_F12) { PostQuitMessage(0); return 0; }
         if (wp == VK_INSERT)
         {
@@ -141,6 +215,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 // ---------------------------------------------------------------- entry point
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
+    g_hudMode = (wcsstr(GetCommandLineW(), L"--hud") != nullptr);
+
     ImGui_ImplWin32_EnableDpiAwareness();
 
     WNDCLASSEXW wc = {};
@@ -152,9 +228,33 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     wc.lpszClassName = L"ImGuiOverlaySandbox";
     if (!RegisterClassExW(&wc)) return 1;
 
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"ImGui overlay sandbox",
-                                WS_OVERLAPPEDWINDOW, 120, 120, 900, 640,
-                                nullptr, nullptr, hInst, nullptr);
+    HWND hwnd = nullptr;
+    if (g_hudMode)
+    {
+        // Fullscreen, borderless, tool window: an external HUD that floats
+        // above everything else on the desktop.
+        const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        const int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW,
+                               wc.lpszClassName, L"ImGui HUD overlay",
+                               WS_POPUP, vx, vy, vw, vh,
+                               nullptr, nullptr, hInst, nullptr);
+        if (hwnd)
+        {
+            // Colour key: every black pixel of the framebuffer becomes
+            // transparent, so only the HUD itself stays visible.
+            SetLayeredWindowAttributes(hwnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
+            g_clickThrough = true;
+        }
+    }
+    if (!hwnd)
+    {
+        hwnd = CreateWindowExW(0, wc.lpszClassName, L"ImGui overlay sandbox",
+                               WS_OVERLAPPEDWINDOW, 120, 120, 900, 640,
+                               nullptr, nullptr, hInst, nullptr);
+    }
     if (!hwnd) return 1;
 
     HDC hdc = GetDC(hwnd);
@@ -177,7 +277,22 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
 
-    overlay::AddLog("overlay initialised (Win32)");
+    if (g_hudMode)
+    {
+        // The overlay window does not hold the keyboard focus, so the hotkeys
+        // are registered globally.
+        struct { int id; UINT key; const char* what; } hotkeys[] = {
+            { 1, VK_INSERT, "INSERT" },
+            { 2, VK_F1,     "F1" },
+            { 3, VK_F2,     "F2" },
+            { 4, VK_F12,    "F12" },
+        };
+        for (auto& hk : hotkeys)
+            if (!RegisterHotKey(hwnd, hk.id, MOD_NOREPEAT, hk.key))
+                overlay::AddLog("hotkey %s could not be registered", hk.what);
+    }
+
+    overlay::AddLog("overlay initialised (Win32%s)", g_hudMode ? ", HUD mode" : "");
     overlay::AddLog("OpenGL %s", (const char*)glGetString(GL_VERSION));
 
     DWORD last = GetTickCount();
@@ -205,12 +320,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
         ImGui::NewFrame();
 
         overlay::DrawUI(hooks, dt);
+        if (g_hudMode) DrawHUD();
 
         ImGui::Render();
         RECT rect;
         GetClientRect(hwnd, &rect);
         glViewport(0, 0, rect.right, rect.bottom);
-        glClearColor(0.055f, 0.065f, 0.085f, 1.0f);
+        if (g_hudMode)
+            glClearColor(0.0f, 0.0f, 0.0f, 0.0f);   // colour key -> transparent
+        else
+            glClearColor(0.055f, 0.065f, 0.085f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SwapBuffers(hdc);

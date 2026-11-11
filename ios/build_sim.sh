@@ -5,6 +5,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Icons are drawn from scratch by a pure stdlib script, so a fresh checkout
+# always ends up with valid RGB PNGs (iOS rejects icons with an alpha channel).
+if command -v python3 >/dev/null 2>&1 && [ -f make_icons.py ]; then
+  echo "==> generating icons"
+  python3 make_icons.py
+fi
+
 BUNDLE_ID="${BUNDLE_ID:-com.maksim.imguioverlay}"
 
 echo "==> cmake -G Xcode (iOS Simulator)"

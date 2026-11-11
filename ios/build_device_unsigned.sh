@@ -9,6 +9,13 @@ cd "$(dirname "$0")"
 
 BUNDLE_ID="${BUNDLE_ID:-com.maksim.imguioverlay}"
 
+# Icons are drawn from scratch by a pure stdlib script, so a fresh checkout
+# always ends up with valid RGB PNGs (iOS rejects icons with an alpha channel).
+if command -v python3 >/dev/null 2>&1 && [ -f make_icons.py ]; then
+  echo "==> generating icons"
+  python3 make_icons.py
+fi
+
 echo "==> cmake -G Xcode (iphoneos / arm64)"
 cmake -S . -B build-dev -G Xcode \
   -DCMAKE_SYSTEM_NAME=iOS \
