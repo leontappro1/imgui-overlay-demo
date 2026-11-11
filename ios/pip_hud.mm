@@ -12,6 +12,8 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
+#import <CoreMedia/CoreMedia.h>
+#import <CoreVideo/CoreVideo.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 
@@ -21,8 +23,10 @@
 
 namespace
 {
-    const int    kPipWidth   = 540;
-    const int    kPipHeight  = 960;
+    // Square canvas: the PiP window keeps the aspect ratio of the video it
+    // shows, and a square panel lets the ImGui menu fill it nicely.
+    const int    kPipWidth   = 900;
+    const int    kPipHeight  = 900;
     const double kPipFps     = 30.0;
 
     static bool  s_pipOpaque = true;
@@ -142,8 +146,8 @@ namespace
     io.DisplayFramebufferScale   = ImVec2(1.0f, 1.0f);
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
-    style.FontSizeBase = 15.0f;
-    style.ScaleAllSizes(0.9f);
+    style.FontSizeBase = 24.0f;          // the PiP window is small on screen
+    style.ScaleAllSizes(1.2f);
 
     ImGui_ImplMetal_Init(self.device);
 

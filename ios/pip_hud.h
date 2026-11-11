@@ -11,9 +11,7 @@
 #pragma once
 
 #import <Foundation/Foundation.h>
-
-@class MTLDevice;
-@class MTLCommandQueue;
+#import <Metal/Metal.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
