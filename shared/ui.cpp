@@ -110,8 +110,12 @@ namespace overlay
                 ImGui::SameLine();
                 if (ImGui::Button("clear", ImVec2(80, 0))) g.log.clear();
 
-                ImGui::BeginChild("log", ImVec2(-1, 90), ImGuiChildFlags_Borders);
+                ImGui::BeginChild("log", ImVec2(-1, 110), ImGuiChildFlags_Borders);
                 for (const auto& line : g.log) ImGui::TextUnformatted(line.c_str());
+                // Two ImGui contexts (app + PiP) share this log, so keep it
+                // pinned to the newest line. PiP diagnostics are useless if
+                // they are appended below the visible part of the child.
+                ImGui::SetScrollHereY(1.0f);
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }

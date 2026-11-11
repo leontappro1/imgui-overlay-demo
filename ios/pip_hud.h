@@ -13,6 +13,8 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+@class UIView;
+
 NS_ASSUME_NONNULL_BEGIN
 
 @interface PipHudController : NSObject
@@ -22,9 +24,22 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)configureWithDevice:(id<MTLDevice>)device
                      queue:(id<MTLCommandQueue>)queue;
 
-- (BOOL)isRunning;
+/// iOS refuses to start PiP unless the sample buffer display layer is part of
+/// a visible view hierarchy with a non-zero frame. Call this from
+/// viewDidAppear (and again from viewDidLayoutSubviews after a rotation).
+- (void)attachToView:(UIView*)hostView;
 
-/// Starts the picture-in-picture window. Returns NO and fills @p error on failure.
+- (BOOL)isRunning;
+- (BOOL)isPictureInPictureActive;
+- (BOOL)isPictureInPicturePossible;
+
+/// Called on the main queue when PiP actually starts, stops or fails. The
+/// button in main.mm must follow this, NOT the return value of start:.
+@property (nonatomic, copy, nullable) void (^stateChanged)(BOOL active);
+
+/// Starts the picture-in-picture window. Returns NO and fills @p error on an
+/// immediate setup failure; a successful start is asynchronous and reported
+/// through stateChanged / the delegate callbacks.
 - (BOOL)start:(NSError* _Nullable * _Nullable)error;
 
 - (void)stop;

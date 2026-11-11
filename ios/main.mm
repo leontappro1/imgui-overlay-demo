@@ -62,6 +62,8 @@ static overlay::PlatformHooks g_hooks;
 @property (nonatomic, strong) MTKView* mtkView;
 @property (nonatomic, strong) id<MTLDevice> device;
 @property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
+@property (nonatomic, strong) UIView* pipSourceView;
+@property (nonatomic, strong) UIButton* pipButton;
 @end
 
 @implementation AppViewController
@@ -141,6 +143,25 @@ static overlay::PlatformHooks g_hooks;
         [pipButton.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],
         [pipButton.heightAnchor constraintEqualToConstant:44],
     ]];
+    self.pipButton = pipButton;
+
+    // A REAL on-screen source view for the PiP display layer. iOS silently
+    // refuses to start picture-in-picture when AVSampleBufferDisplayLayer is
+    // detached from the view hierarchy. This square also acts as a local
+    // preview: if the HUD is visible in it, frames are flowing correctly.
+    const CGFloat side = 132.0;
+    UIView* pipSource = [[UIView alloc]
+        initWithFrame:CGRectMake(14.0, root.bounds.size.height - side - 28.0, side, side)];
+    pipSource.backgroundColor       = [UIColor blackColor];
+    pipSource.layer.borderColor     = [UIColor colorWithWhite:0.85 alpha:0.55].CGColor;
+    pipSource.layer.borderWidth     = 1.0;
+    pipSource.layer.cornerRadius    = 8.0;
+    pipSource.clipsToBounds         = YES;
+    pipSource.userInteractionEnabled = NO;
+    pipSource.autoresizingMask      = UIViewAutoresizingFlexibleTopMargin |
+                                      UIViewAutoresizingFlexibleRightMargin;
+    [root addSubview:pipSource];
+    self.pipSourceView = pipSource;
 
     self.view = root;
     s_mtkView = self.mtkView;
@@ -155,9 +176,35 @@ static overlay::PlatformHooks g_hooks;
     overlay::AddLog("overlay initialised (iOS / Metal)");
     overlay::AddLog("device: %s", [[self.device name] UTF8String]);
 
-    [[PipHudController sharedController] configureWithDevice:self.device queue:self.commandQueue];
+    PipHudController* pip = [PipHudController sharedController];
+    [pip configureWithDevice:self.device queue:self.commandQueue];
+
+    __weak AppViewController* weakSelf = self;
+    pip.stateChanged = ^(BOOL active) {
+        __strong AppViewController* strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf.pipButton setTitle:active ? @"Stop HUD (PiP)"
+                                              : @"> HUD above the screen (PiP)"
+                              forState:UIControlStateNormal];
+    };
+
     overlay::AddLog("PiP overlay: %s",
                     [AVPictureInPictureController isPictureInPictureSupported] ? "supported" : "NOT supported");
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    // The layer must be attached only once the view is really on screen.
+    [[PipHudController sharedController] attachToView:self.pipSourceView];
+}
+
+- (void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
+    // Keep the layer's frame non-zero after rotation / safe-area changes.
+    if (self.pipSourceView)
+        [[PipHudController sharedController] attachToView:self.pipSourceView];
 }
 
 // ---------------------------------------------------------------- floating HUD
@@ -165,13 +212,14 @@ static overlay::PlatformHooks g_hooks;
 {
     PipHudController* pip = [PipHudController sharedController];
 
-    if (pip.isRunning)
+    if (pip.isRunning || pip.isPictureInPictureActive)
     {
         [pip stop];
         [sender setTitle:@"> HUD above the screen (PiP)" forState:UIControlStateNormal];
         return;
     }
 
+    overlay::AddLog("PiP: button pressed");
     NSError* error = nil;
     if ([pip start:&error])
     {
@@ -179,6 +227,7 @@ static overlay::PlatformHooks g_hooks;
     }
     else
     {
+        [sender setTitle:@"> HUD above the screen (PiP)" forState:UIControlStateNormal];
         overlay::AddLog("PiP start failed: %s", [[error localizedDescription] UTF8String]);
     }
 }
