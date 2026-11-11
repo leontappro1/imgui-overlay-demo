@@ -1,92 +1,142 @@
-// Floating iOS overlay (Picture in Picture) - implementation.
+// System-level floating HUD on iOS.
 //
-// Pipeline per frame:
-//   ImGui -> Metal render pass -> CVPixelBuffer -> CMSampleBuffer
-//        -> AVSampleBufferDisplayLayer -> AVPictureInPictureController
+// There is no "draw over other apps" API for third-party apps. The ONE window
+// iOS composites above everything else is picture-in-picture. But there are
+// two fundamentally different PiP content sources:
 //
-// The picture-in-picture window is drawn by iOS above every other app,
-// which is the only sanctioned way to get an overlay on a stock iPhone.
+//   * initWithSampleBufferDisplayLayer:playbackDelegate:  -> a VIDEO player.
+//     iOS adds play/pause, +/-10s, a scrubber and a "LIVE" badge. Looks like
+//     a video. (This is what the previous build used.)
 //
-// Requirements that are easy to miss (all handled below):
-//   1. The AVSampleBufferDisplayLayer MUST be a sublayer of a view that is
-//      actually on screen, with a non-zero frame. A detached layer makes
-//      startPictureInPicture a silent no-op.
-//   2. The AVAudioSession (.playback) must be active BEFORE the PiP
-//      controller is created, otherwise pictureInPicturePossible stays NO.
-//   3. At least one frame must have been enqueued before the controller is
-//      created - the content source has to be "ready for display".
-//   4. The live time range must be [-inf, +inf], otherwise PiP shows an
-//      endless loading spinner instead of the frames.
+//   * initWithActiveVideoCallSourceView:contentViewController: (iOS 15+)
+//     -> a plain UIView hierarchy inside the PiP window. No player chrome,
+//     no LIVE badge, no scrubber, and preferredContentSize lets us influence
+//     the window's aspect ratio. This is the one used below.
+//
+// The activeVideoCallSourceView is a real, visible view in our app. The
+// contentViewController's view is what the system shows in the floating
+// window. Apple explicitly allows DIFFERENT views in both places as long as
+// they represent the same "call"; here both are the same dark HUD strip.
+//
+// SDK 18.5 header notes we follow here:
+//   * KVO key path is "pictureInPicturePossible" (getter isPictureInPicturePossible).
+//   * the content VC's view is NOT interactive;
+//   * content should be installed once its appearance methods say it is on screen;
+//   * content should fill the content VC's view bounds;
+//   * set contentSource to nil / release the controller when the "call" ends.
 
 #import "pip_hud.h"
 
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
-#import <CoreMedia/CoreMedia.h>
-#import <CoreVideo/CoreVideo.h>
-#import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 
-#include "imgui.h"
-#include "imgui_impl_metal.h"
+#include <string.h>
 #include "ui.h"
 
 namespace
 {
-    // Square canvas: the PiP window keeps the aspect ratio of the content it
-    // shows, and a square panel lets the ImGui menu fill it nicely.
-    const int    kPipWidth  = 900;
-    const int    kPipHeight = 900;
-    const double kPipFps    = 30.0;
+    // Influences the aspect ratio AND the size of the system PiP window.
+    // A wide, shallow rectangle reads as a HUD bar rather than a video.
+    const CGFloat kHudWidth  = 960.0;
+    const CGFloat kHudHeight = 240.0;
+    const double  kHudFps    = 30.0;
 
-    static bool s_pipOpaque = true;
-    static bool s_pipPaused = false;
     static char kPipPossibleContext;
 
-    static void PipOnToggle(void*) {}
-
-    overlay::PlatformHooks MakePipHooks()
+    // Dark strip + monospaced text. Used both inline and inside the PiP window.
+    // Explicit __strong out-pointer avoids ARC writeback surprises with ivars.
+    UIView* MakeHudStrip(CGRect frame, UILabel * __strong *outLabel)
     {
-        overlay::PlatformHooks h = {};
-        h.platform_line = "iOS / PiP floating window / Metal";
-        h.hotkeys_line  = "the PiP window is display only - control it in the app";
-        h.backend_name  = "AVSampleBufferDisplayLayer + imgui_impl_metal";
-        h.compiler_name = "Apple Clang (Xcode)";
-        h.window_note   = "This is a real picture-in-picture window: iOS draws "
-                          "it above every other application. The frames are "
-                          "rendered by Dear ImGui into a CVPixelBuffer and "
-                          "pushed through the sample buffer display layer.";
-        h.toggles[0] = { "opaque background", &s_pipOpaque };
-        h.toggles[1] = { "paused", &s_pipPaused };
-        h.toggle_count = 2;
-        h.on_toggle = PipOnToggle;
-        return h;
+        UIView* strip = [[UIView alloc] initWithFrame:frame];
+        strip.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.82];
+        strip.layer.cornerRadius = 14.0;
+        strip.clipsToBounds = YES;
+        strip.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                 UIViewAutoresizingFlexibleHeight;
+
+        UIView* accent = [[UIView alloc]
+            initWithFrame:CGRectMake(0.0, CGRectGetHeight(frame) - 5.0,
+                                     CGRectGetWidth(frame), 5.0)];
+        accent.backgroundColor = [UIColor colorWithRed:0.20 green:0.80 blue:0.95 alpha:1.0];
+        accent.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                  UIViewAutoresizingFlexibleTopMargin;
+        [strip addSubview:accent];
+
+        UILabel* label = [[UILabel alloc] initWithFrame:CGRectInset(frame, 18.0, 8.0)];
+        label.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                 UIViewAutoresizingFlexibleHeight;
+        label.textColor = [UIColor whiteColor];
+        label.textAlignment = NSTextAlignmentCenter;
+        label.font = [UIFont monospacedSystemFontOfSize:46.0 weight:UIFontWeightBold];
+        label.adjustsFontSizeToFitWidth = YES;
+        label.minimumScaleFactor = 0.25;
+        label.numberOfLines = 1;
+        label.text = @"Hud  |  fps : ?  |  ping : ?";
+        [strip addSubview:label];
+
+        if (outLabel) *outLabel = label;
+        return strip;
     }
 }
 
-@interface PipHudController () <AVPictureInPictureControllerDelegate,
-                                AVPictureInPictureSampleBufferPlaybackDelegate>
-@property (nonatomic, strong) id<MTLDevice> device;
-@property (nonatomic, strong) id<MTLCommandQueue> queue;
-@property (nonatomic, strong) AVSampleBufferDisplayLayer* displayLayer;
+// ---------------------------------------------------------------- PiP content VC
+// Apple's guidance: put call content into this controller's view hierarchy
+// once it has appeared. We do exactly that, instead of guessing view.bounds
+// at controller-creation time.
+
+API_AVAILABLE(ios(15.0))
+@interface HudVideoCallViewController : AVPictureInPictureVideoCallViewController
+@property (nonatomic, strong, nullable) UILabel* hudLabel;
+@end
+
+@implementation HudVideoCallViewController
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.82];
+    self.view.clipsToBounds = YES;
+    if (CGRectIsEmpty(self.view.bounds))
+        self.view.frame = CGRectMake(0.0, 0.0, kHudWidth, kHudHeight);
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    if (self.hudLabel) return;
+
+    UILabel* label = nil;
+    UIView* strip = MakeHudStrip(self.view.bounds, &label);
+    strip.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                             UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:strip];
+    self.hudLabel = label;
+
+    overlay::AddLog("HUD: PiP view %.0fx%.0f",
+                    self.view.bounds.size.width, self.view.bounds.size.height);
+}
+
+@end
+
+// ---------------------------------------------------------------- controller
+
+@interface PipHudController () <AVPictureInPictureControllerDelegate>
+@property (nonatomic, weak)   UIView* sourceView;
 @property (nonatomic, strong) AVPictureInPictureController* pipController;
-@property (nonatomic, assign) CVMetalTextureCacheRef textureCache;
-@property (nonatomic, assign) CVPixelBufferPoolRef pixelPool;
-@property (nonatomic, assign) CMTimebaseRef timebase;
-@property (nonatomic, assign) ImGuiContext* guiContext;
-@property (nonatomic, assign) BOOL guiReady;
-@property (nonatomic, assign) BOOL running;
-@property (nonatomic, assign) BOOL startRequested;
-@property (nonatomic, assign) BOOL observing;
-@property (nonatomic, assign) BOOL firstFrameLogged;
+@property (nonatomic, strong) AVPictureInPictureControllerContentSource* contentSource;
+@property (nonatomic, strong) HudVideoCallViewController* contentVC;
+@property (nonatomic, strong) UILabel* inlineLabel;
 @property (nonatomic, strong) dispatch_source_t timer;
 @property (nonatomic, strong) AVAudioEngine* audioEngine;
 @property (nonatomic, strong) AVAudioPlayerNode* audioNode;
 @property (nonatomic, assign) UIBackgroundTaskIdentifier backgroundTask;
-@property (nonatomic, assign) CFTimeInterval lastFrameTime;
-@property (nonatomic, assign) CMTime firstPTS;
-@property (nonatomic, assign) CMTime lastPTS;
+@property (nonatomic, assign) BOOL running;
+@property (nonatomic, assign) BOOL startRequested;
+@property (nonatomic, assign) BOOL observing;
+@property (nonatomic, assign) CFTimeInterval lastTick;
+@property (nonatomic, assign) float fps;
 @end
 
 @implementation PipHudController
@@ -111,119 +161,30 @@ namespace
     [self stopTimer];
     [self stopObserving];
     [self stopSilentAudio];
-    if (_textureCache) CFRelease(_textureCache);
-    if (_pixelPool)    CFRelease(_pixelPool);
-    if (_timebase)     CFRelease(_timebase);
 }
 
-// ---------------------------------------------------------------- setup
+// ---------------------------------------------------------------- source view
+// The video-call PiP API needs a real, visible view in the app. iOS uses its
+// layout frame and visibility to decide whether PiP can start automatically.
 
-- (void)configureWithDevice:(id<MTLDevice>)device queue:(id<MTLCommandQueue>)queue
+- (void)attachSourceView:(UIView*)view
 {
-    self.device = device;
-    self.queue  = queue;
+    if (!view || CGRectIsEmpty(view.bounds)) return;
+    self.sourceView = view;
 
-    if (!self.textureCache)
-        CVMetalTextureCacheCreate(kCFAllocatorDefault, NULL, device, NULL, &_textureCache);
-
-    [self ensureDisplayLayer];
-    [self ensureTimebase];
-    [self ensurePixelPool];
-    [self ensureGuiContext];
-}
-
-- (void)ensureDisplayLayer
-{
-    if (self.displayLayer) return;
-
-    AVSampleBufferDisplayLayer* layer = [AVSampleBufferDisplayLayer layer];
-    layer.videoGravity    = AVLayerVideoGravityResizeAspect;
-    layer.backgroundColor = [UIColor blackColor].CGColor;
-    layer.opaque          = YES;
-    self.displayLayer = layer;
-}
-
-- (void)ensureTimebase
-{
-    if (self.timebase) return;
-    [self ensureDisplayLayer];
-    CMTimebaseCreateWithSourceClock(kCFAllocatorDefault, CMClockGetHostTimeClock(), &_timebase);
-    CMTimebaseSetTime(self.timebase, kCMTimeZero);
-    CMTimebaseSetRate(self.timebase, 1.0);
-    self.displayLayer.controlTimebase = self.timebase;
-}
-
-- (void)ensurePixelPool
-{
-    if (self.pixelPool) return;
-
-    NSDictionary* attrs = @{
-        (id)kCVPixelBufferPixelFormatTypeKey              : @(kCVPixelFormatType_32BGRA),
-        (id)kCVPixelBufferWidthKey                        : @(kPipWidth),
-        (id)kCVPixelBufferHeightKey                       : @(kPipHeight),
-        (id)kCVPixelBufferIOSurfacePropertiesKey          : @{},
-        (id)kCVPixelBufferMetalCompatibilityKey           : @YES,
-        (id)kCVPixelBufferCGImageCompatibilityKey         : @YES,
-        (id)kCVPixelBufferCGBitmapContextCompatibilityKey : @YES,
-    };
-    NSDictionary* poolAttrs = @{
-        (id)kCVPixelBufferPoolMinimumBufferCountKey : @(3),
-    };
-
-    // CVPixelBufferPoolCreate(allocator, poolAttributes, pixelBufferAttributes, poolOut)
-    CVPixelBufferPoolCreate(kCFAllocatorDefault,
-                            (__bridge CFDictionaryRef)poolAttrs,
-                            (__bridge CFDictionaryRef)attrs,
-                            &_pixelPool);
-}
-
-// The PiP window has its own ImGui context, so the menu inside it never
-// fights with the full screen menu of the app.
-- (void)ensureGuiContext
-{
-    if (self.guiReady) return;
-
-    ImGuiContext* previous = ImGui::GetCurrentContext();
-
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename              = nullptr;
-    io.DisplaySize              = ImVec2((float)kPipWidth, (float)kPipHeight);
-    io.DisplayFramebufferScale  = ImVec2(1.0f, 1.0f);
-    ImGui::StyleColorsDark();
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.FontSizeBase = 24.0f;          // the PiP window is small on screen
-    style.ScaleAllSizes(1.2f);
-
-    ImGui_ImplMetal_Init(self.device);
-
-    self.guiContext = ImGui::GetCurrentContext();
-    self.guiReady   = YES;
-
-    ImGui::SetCurrentContext(previous);
-}
-
-// ---------------------------------------------------------------- host view
-// iOS only starts PiP for a layer that lives in the on-screen view hierarchy.
-// The little square in main.mm doubles as a local preview of the HUD frames.
-
-- (void)attachToView:(UIView*)hostView
-{
-    if (!hostView) return;
-    [self ensureDisplayLayer];
-    [self ensureTimebase];
-
-    BOOL wasAttached = (self.displayLayer.superlayer != nil);
-    if (self.displayLayer.superlayer != hostView.layer)
+    if (!self.inlineLabel)
     {
-        [self.displayLayer removeFromSuperlayer];
-        [hostView.layer addSublayer:self.displayLayer];
+        UILabel* label = nil;
+        UIView* strip = MakeHudStrip(view.bounds, &label);
+        [view addSubview:strip];
+        self.inlineLabel = label;
+        overlay::AddLog("HUD: source view %.0fx%.0f",
+                        view.bounds.size.width, view.bounds.size.height);
     }
-    self.displayLayer.frame = hostView.bounds;
-
-    if (!wasAttached)
-        overlay::AddLog("PiP: source view %.0fx%.0f attached",
-                        hostView.bounds.size.width, hostView.bounds.size.height);
+    else
+    {
+        self.inlineLabel.superview.frame = view.bounds;
+    }
 }
 
 // ---------------------------------------------------------------- control
@@ -246,6 +207,15 @@ namespace
 {
     if (self.running) return YES;
 
+    if (!@available(iOS 15.0, *))
+    {
+        if (error)
+            *error = [NSError errorWithDomain:@"PipHud" code:4 userInfo:@{
+                NSLocalizedDescriptionKey: @"Video-call Picture in Picture needs iOS 15 or newer" }];
+        overlay::AddLog("HUD: ERROR - iOS 15+ required");
+        return NO;
+    }
+
     if (![AVPictureInPictureController isPictureInPictureSupported])
     {
         if (error)
@@ -254,58 +224,42 @@ namespace
         return NO;
     }
 
-    if (!self.device || !self.queue)
+    UIView* source = self.sourceView;
+    if (!source || !source.window || CGRectIsEmpty(source.bounds))
     {
         if (error)
             *error = [NSError errorWithDomain:@"PipHud" code:2 userInfo:@{
-                NSLocalizedDescriptionKey: @"Metal device was not configured" }];
+                NSLocalizedDescriptionKey: @"HUD source view is not on screen" }];
+        overlay::AddLog("HUD: ERROR - source view not visible");
         return NO;
     }
 
-    // Failure #1 in the field: a detached display layer. Fail loudly instead
-    // of pretending PiP started.
-    if (!self.displayLayer || !self.displayLayer.superlayer ||
-        CGRectIsEmpty(self.displayLayer.frame))
-    {
-        if (error)
-            *error = [NSError errorWithDomain:@"PipHud" code:3 userInfo:@{
-                NSLocalizedDescriptionKey: @"PiP display layer is not attached to a visible view" }];
-        overlay::AddLog("PiP: ERROR - display layer not on screen");
-        return NO;
-    }
-
-    [self ensureGuiContext];
-    [self ensureTimebase];
-
-    // Failure #2: the audio session has to be active BEFORE the controller is
-    // created, or isPictureInPicturePossible stays NO and start is a no-op.
+    // The audio session must be active BEFORE the controller is created,
+    // otherwise isPictureInPicturePossible stays NO and start is a no-op.
     [self startSilentAudio];
 
-    self.firstPTS         = kCMTimeInvalid;
-    self.lastPTS          = kCMTimeInvalid;
-    self.lastFrameTime    = CACurrentMediaTime();
-    self.startRequested   = NO;
-    self.firstFrameLogged = NO;
-    self.running          = YES;
+    HudVideoCallViewController* contentVC =
+        [[HudVideoCallViewController alloc] init];
+    contentVC.preferredContentSize = CGSizeMake(kHudWidth, kHudHeight);
+    [contentVC loadViewIfNeeded];
+    self.contentVC = contentVC;
 
-    // Failure #3: the content source must already have a frame. The renderer
-    // waits for the GPU before enqueueing, so this is a real picture.
-    [self renderFrame];
-
-    AVPictureInPictureControllerContentSource* source =
+    AVPictureInPictureControllerContentSource* contentSource =
         [[AVPictureInPictureControllerContentSource alloc]
-            initWithSampleBufferDisplayLayer:self.displayLayer
-                             playbackDelegate:self];
+            initWithActiveVideoCallSourceView:source
+                        contentViewController:contentVC];
+    self.contentSource = contentSource;
 
     AVPictureInPictureController* controller =
-        [[AVPictureInPictureController alloc] initWithContentSource:source];
+        [[AVPictureInPictureController alloc] initWithContentSource:contentSource];
     if (!controller)
     {
         if (error)
-            *error = [NSError errorWithDomain:@"PipHud" code:4 userInfo:@{
+            *error = [NSError errorWithDomain:@"PipHud" code:3 userInfo:@{
                 NSLocalizedDescriptionKey: @"AVPictureInPictureController refused to initialise" }];
-        overlay::AddLog("PiP: ERROR - controller init returned nil");
-        self.running = NO;
+        overlay::AddLog("HUD: ERROR - controller init returned nil");
+        self.contentSource = nil;
+        self.contentVC = nil;
         [self stopSilentAudio];
         return NO;
     }
@@ -313,16 +267,18 @@ namespace
     self.pipController = controller;
     controller.delegate = self;
     controller.canStartPictureInPictureAutomaticallyFromInline = YES;
-    controller.requiresLinearPlayback = NO;
+
+    self.running        = YES;
+    self.startRequested = NO;
+    self.lastTick       = CACurrentMediaTime();
+    self.fps            = 0.0f;
 
     [self startObserving];
     [self startTimer];
 
-    overlay::AddLog("PiP: possible=%d active=%d layer=%ld audio=%d",
-                    controller.isPictureInPicturePossible,
-                    controller.isPictureInPictureActive,
-                    (long)self.displayLayer.status,
-                    self.audioEngine.isRunning);
+    overlay::AddLog("HUD: video-call PiP (no player controls)");
+    overlay::AddLog("HUD: possible=%d audio=%d",
+                    controller.isPictureInPicturePossible, self.audioEngine.isRunning);
 
     [self requestStartPictureInPicture];
     [self scheduleStartRetries];
@@ -335,11 +291,13 @@ namespace
     [self stopObserving];
     [self stopSilentAudio];
     [self.pipController stopPictureInPicture];
-    self.pipController = nil;
-    self.running       = NO;
+    self.pipController  = nil;
+    self.contentSource  = nil;
+    self.contentVC      = nil;
+    self.running        = NO;
     self.startRequested = NO;
     [self postState:NO];
-    overlay::AddLog("PiP: stopped by app");
+    overlay::AddLog("HUD: stopped by app");
 }
 
 // startPictureInPicture is a silent no-op when isPictureInPicturePossible is
@@ -352,15 +310,14 @@ namespace
 
     if (!self.pipController.isPictureInPicturePossible)
     {
-        overlay::AddLog("PiP: not possible yet (layer=%ld audio=%d)",
-                        (long)self.displayLayer.status, self.audioEngine.isRunning);
+        overlay::AddLog("HUD: not possible yet (audio=%d)", self.audioEngine.isRunning);
         return;
     }
 
     if (!self.startRequested)
     {
         self.startRequested = YES;
-        overlay::AddLog("PiP: requested");
+        overlay::AddLog("HUD: requested");
     }
     [self.pipController startPictureInPicture];
 }
@@ -368,13 +325,25 @@ namespace
 - (void)scheduleStartRetries
 {
     const double delays[] = { 0.2, 0.6, 1.5, 3.0 };
+    __weak __typeof(self) weakSelf = self;
     for (double delay : delays)
     {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * (double)NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            [self requestStartPictureInPicture];
+            [weakSelf requestStartPictureInPicture];
         });
     }
+
+    // Do not leave the button stuck on "Starting..." forever if the system
+    // silently refuses PiP. stateChanged(NO) puts the UI back to idle.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * (double)NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong __typeof(self) strongSelf = weakSelf;
+        if (!strongSelf || !strongSelf.running) return;
+        if (strongSelf.pipController.isPictureInPictureActive) return;
+        overlay::AddLog("HUD: start timeout - PiP never became active");
+        [strongSelf stop];
+    });
 }
 
 - (void)startObserving
@@ -392,8 +361,6 @@ namespace
                 name:UIApplicationWillResignActiveNotification object:nil];
     [nc addObserver:self selector:@selector(appDidEnterBackground:)
                 name:UIApplicationDidEnterBackgroundNotification object:nil];
-    [nc addObserver:self selector:@selector(appDidBecomeActive:)
-                name:UIApplicationDidBecomeActiveNotification object:nil];
 }
 
 - (void)stopObserving
@@ -414,8 +381,9 @@ namespace
 {
     if (context == &kPipPossibleContext)
     {
-        BOOL possible = [change[NSKeyValueChangeNewKey] boolValue];
-        overlay::AddLog("PiP: possible=%d", possible);
+        id value = change[NSKeyValueChangeNewKey];
+        BOOL possible = [value respondsToSelector:@selector(boolValue)] ? [value boolValue] : NO;
+        overlay::AddLog("HUD: possible=%d", possible);
         if (possible) [self requestStartPictureInPicture];
         return;
     }
@@ -425,33 +393,20 @@ namespace
 - (void)appWillResignActive:(NSNotification*)note
 {
     if (!self.running) return;
-    overlay::AddLog("PiP: leaving foreground - kicking start");
+    overlay::AddLog("HUD: leaving foreground");
     [self requestStartPictureInPicture];
 }
 
 - (void)appDidEnterBackground:(NSNotification*)note
 {
     if (!self.running) return;
-    overlay::AddLog("PiP: bg audio=%d timer=%d layer=%ld",
-                    self.audioEngine.isRunning, self.timer != nil,
-                    (long)self.displayLayer.status);
+    overlay::AddLog("HUD: bg audio=%d timer=%d", self.audioEngine.isRunning, self.timer != nil);
     [self requestStartPictureInPicture];
 }
 
-- (void)appDidBecomeActive:(NSNotification*)note
-{
-    if (!self.running) return;
-    // AVSampleBufferDisplayLayer often comes back from background in the
-    // "failed" state. Flush and push a fresh frame so the window recovers.
-    if (self.displayLayer.status == AVQueuedSampleBufferRenderingStatusFailed)
-        [self.displayLayer flush];
-    [self renderFrame];
-}
-
 // ---------------------------------------------------------------- keep alive
-// iOS suspends apps that have nothing to do in the background. A silent audio
-// session plus the "audio" background mode keeps the frame timer running while
-// the PiP window floats above another app.
+// Background audio keeps the process (and the label-update timer) alive while
+// the PiP HUD floats above another app.
 
 - (void)startSilentAudio
 {
@@ -469,8 +424,6 @@ namespace
     if (![session setActive:YES error:&error])
         overlay::AddLog("audio activate failed: %s", [[error localizedDescription] UTF8String]);
 
-    // Stereo float matches the mixer's format, so connect:to:format: cannot
-    // throw an incompatible-format exception.
     AVAudioEngine* engine = [[AVAudioEngine alloc] init];
     AVAudioFormat* format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:44100.0 channels:2];
     AVAudioPlayerNode* node = [[AVAudioPlayerNode alloc] init];
@@ -486,7 +439,7 @@ namespace
         return;
     }
 
-    const UInt32 frames = (UInt32)format.sampleRate;   // one second of silence
+    const UInt32 frames = (UInt32)format.sampleRate;
     AVAudioPCMBuffer* buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format
                                                             frameCapacity:frames];
     buffer.frameLength = frames;
@@ -498,14 +451,12 @@ namespace
 
     self.audioEngine = engine;
     self.audioNode   = node;
-    overlay::AddLog("audio keepalive: on (%s)", [session.category UTF8String]);
 
-    // Extra insurance for the first seconds after the app leaves foreground.
     if (self.backgroundTask == UIBackgroundTaskInvalid)
     {
         __weak __typeof(self) weakSelf = self;
         self.backgroundTask = [[UIApplication sharedApplication]
-            beginBackgroundTaskWithName:@"pip-frames" expirationHandler:^{
+            beginBackgroundTaskWithName:@"hud-frames" expirationHandler:^{
                 __strong __typeof(self) strongSelf = weakSelf;
                 if (!strongSelf) return;
                 [[UIApplication sharedApplication] endBackgroundTask:strongSelf.backgroundTask];
@@ -521,18 +472,16 @@ namespace
         [[UIApplication sharedApplication] endBackgroundTask:self.backgroundTask];
         self.backgroundTask = UIBackgroundTaskInvalid;
     }
-
     [self.audioNode stop];
     [self.audioEngine stop];
     self.audioNode   = nil;
     self.audioEngine = nil;
-
     [[AVAudioSession sharedInstance] setActive:NO
                                    withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
                                          error:NULL];
 }
 
-// ---------------------------------------------------------------- render loop
+// ---------------------------------------------------------------- HUD text
 
 - (void)startTimer
 {
@@ -540,12 +489,12 @@ namespace
 
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
                                                      dispatch_get_main_queue());
-    uint64_t interval = (uint64_t)(1.0 / kPipFps * (double)NSEC_PER_SEC);
+    uint64_t interval = (uint64_t)(1.0 / kHudFps * (double)NSEC_PER_SEC);
     dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0),
                               interval, interval / 4);
 
     __weak __typeof(self) weakSelf = self;
-    dispatch_source_set_event_handler(timer, ^{ [weakSelf renderFrame]; });
+    dispatch_source_set_event_handler(timer, ^{ [weakSelf updateHud]; });
 
     self.timer = timer;
     dispatch_resume(timer);
@@ -558,130 +507,26 @@ namespace
     self.timer = nil;
 }
 
-- (CVPixelBufferRef)nextPixelBuffer
-{
-    if (!self.pixelPool) return NULL;
-
-    CVPixelBufferRef buffer = NULL;
-    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, self.pixelPool, &buffer) != kCVReturnSuccess)
-        return NULL;
-    return buffer;
-}
-
-- (void)renderFrame
+- (void)updateHud
 {
     if (!self.running) return;
 
-    CVPixelBufferRef pixelBuffer = [self nextPixelBuffer];
-    if (!pixelBuffer) return;
-
-    size_t width  = CVPixelBufferGetWidth(pixelBuffer);
-    size_t height = CVPixelBufferGetHeight(pixelBuffer);
-
-    CVMetalTextureRef metalTexture = NULL;
-    if (CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, self.textureCache, pixelBuffer, NULL,
-                                                  MTLPixelFormatBGRA8Unorm, width, height, 0,
-                                                  &metalTexture) != kCVReturnSuccess)
-    {
-        CVPixelBufferRelease(pixelBuffer);
-        return;
-    }
-    id<MTLTexture> texture = CVMetalTextureGetTexture(metalTexture);
-
-    id<MTLCommandBuffer> commandBuffer = [self.queue commandBuffer];
-
-    MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
-    rpd.colorAttachments[0].texture      = texture;
-    rpd.colorAttachments[0].loadAction   = MTLLoadActionClear;
-    rpd.colorAttachments[0].storeAction  = MTLStoreActionStore;
-    rpd.colorAttachments[0].clearColor   = s_pipOpaque
-        ? MTLClearColorMake(0.04f, 0.05f, 0.07f, 1.0f)
-        : MTLClearColorMake(0.0f, 0.0f, 0.0f, 0.0f);
-
     CFTimeInterval now = CACurrentMediaTime();
-    float dt = (float)(now - self.lastFrameTime);
-    self.lastFrameTime = now;
-    if (dt < 0.0f)  dt = 0.0f;
-    if (dt > 0.25f) dt = 0.25f;
+    float dt = (float)(now - self.lastTick);
+    self.lastTick = now;
+    if (dt > 0.0001f && dt < 1.0f)
+        self.fps = self.fps * 0.9f + (1.0f / dt) * 0.1f;
 
-    ImGuiContext* previous = ImGui::GetCurrentContext();
-    ImGui::SetCurrentContext(self.guiContext);
-
-    ImGuiIO& io = ImGui::GetIO();
-    io.DisplaySize             = ImVec2((float)width, (float)height);
-    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
-
-    ImGui_ImplMetal_NewFrame(rpd);
-    ImGui::NewFrame();
-
-    overlay::DrawUI(MakePipHooks(), s_pipPaused ? 0.0f : dt);
-
-    ImGui::Render();
-    ImDrawData* drawData = ImGui::GetDrawData();
-
-    id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:rpd];
-    [encoder pushDebugGroup:@"Dear ImGui PiP frame"];
-    ImGui_ImplMetal_RenderDrawData(drawData, commandBuffer, encoder);
-    [encoder popDebugGroup];
-    [encoder endEncoding];
-
-    ImGui::SetCurrentContext(previous);
-
-    [commandBuffer commit];
-    // The CVPixelBuffer is shared with the GPU. Without this wait the display
-    // layer can read it before Metal finished drawing (blank/garbage frame).
-    [commandBuffer waitUntilCompleted];
-
-    // --- push the rendered frame into the display layer ---
-    CMTime pts = self.timebase ? CMTimebaseGetTime(self.timebase)
-                                : CMClockGetTime(CMClockGetHostTimeClock());
-    if (CMTIME_IS_INVALID(self.firstPTS)) self.firstPTS = pts;
-    self.lastPTS = pts;
-
-    CMVideoFormatDescriptionRef formatDescription = NULL;
-    if (CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer,
-                                                     &formatDescription) == noErr)
-    {
-        CMSampleTimingInfo timing;
-        timing.duration              = kCMTimeInvalid;   // live stream
-        timing.presentationTimeStamp = pts;
-        timing.decodeTimeStamp       = kCMTimeInvalid;
-
-        CMSampleBufferRef sampleBuffer = NULL;
-        // CMSampleBufferCreateForImageBuffer(allocator, imageBuffer, dataReady,
-        //                                      makeDataReadyCallback, makeDataReadyRefcon,
-        //                                      formatDescription, sampleTiming, sampleBufferOut)
-        if (CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, true,
-                                                NULL, NULL,
-                                                formatDescription, &timing,
-                                                &sampleBuffer) == noErr)
-        {
-            if (self.displayLayer.status == AVQueuedSampleBufferRenderingStatusFailed)
-            {
-                [self.displayLayer flush];
-                overlay::AddLog("PiP: display layer flushed after failure");
-            }
-
-            [self.displayLayer enqueueSampleBuffer:sampleBuffer];
-            if (!self.firstFrameLogged)
-            {
-                self.firstFrameLogged = YES;
-                overlay::AddLog("PiP: first frame queued (%zux%zu)", width, height);
-            }
-            CFRelease(sampleBuffer);
-        }
-        CFRelease(formatDescription);
-    }
-
-    CFRelease(metalTexture);
-    CVPixelBufferRelease(pixelBuffer);
+    NSString* text = [NSString stringWithFormat:@"Hud  |  fps : %.1f  |  ping : ?", self.fps];
+    self.contentVC.hudLabel.text = text;   // nil until the PiP view appears - fine
+    self.inlineLabel.text = text;
 }
 
 // ---------------------------------------------------------------- delegates
 
 - (void)pictureInPictureControllerWillStartPictureInPicture:(AVPictureInPictureController*)controller
 {
-    overlay::AddLog("PiP: starting");
+    overlay::AddLog("HUD: starting");
 }
 
 - (void)pictureInPictureControllerDidStartPictureInPicture:(AVPictureInPictureController*)controller
@@ -689,12 +534,12 @@ namespace
     self.running = YES;
     [self startTimer];
     [self postState:YES];
-    overlay::AddLog("PiP: ACTIVE - floats above every app");
+    overlay::AddLog("HUD: ACTIVE - floats above every app");
 }
 
 - (void)pictureInPictureControllerWillStopPictureInPicture:(AVPictureInPictureController*)controller
 {
-    overlay::AddLog("PiP: stopping");
+    overlay::AddLog("HUD: stopping");
 }
 
 - (void)pictureInPictureControllerDidStopPictureInPicture:(AVPictureInPictureController*)controller
@@ -702,10 +547,13 @@ namespace
     [self stopTimer];
     [self stopObserving];
     [self stopSilentAudio];
+    self.pipController  = nil;
+    self.contentSource  = nil;
+    self.contentVC      = nil;
     self.running        = NO;
     self.startRequested = NO;
     [self postState:NO];
-    overlay::AddLog("PiP: stopped by system");
+    overlay::AddLog("HUD: stopped by system");
 }
 
 - (void)pictureInPictureController:(AVPictureInPictureController*)controller
@@ -720,48 +568,14 @@ namespace
     [self stopTimer];
     [self stopObserving];
     [self stopSilentAudio];
+    self.pipController  = nil;
+    self.contentSource  = nil;
+    self.contentVC      = nil;
     self.running        = NO;
     self.startRequested = NO;
     [self postState:NO];
-    overlay::AddLog("PiP FAILED (%ld): %s",
+    overlay::AddLog("HUD FAILED (%ld): %s",
                     (long)error.code, [[error localizedDescription] UTF8String]);
-}
-
-// AVPictureInPictureSampleBufferPlaybackDelegate
-// (AVKit/AVPictureInPictureController_AVSampleBufferDisplayLayerSupport.h)
-
-- (void)pictureInPictureController:(AVPictureInPictureController*)pictureInPictureController setPlaying:(BOOL)playing
-{
-    s_pipPaused = !playing;
-    if (playing) [self startTimer];
-    overlay::AddLog("PiP: setPlaying %d", playing);
-}
-
-- (CMTimeRange)pictureInPictureControllerTimeRangeForPlayback:(AVPictureInPictureController*)pictureInPictureController
-{
-    // Live content. Returning [0, +inf) makes the system cover the window
-    // with a permanent loading spinner; live content is [-inf, +inf].
-    return CMTimeRangeMake(kCMTimeNegativeInfinity, kCMTimePositiveInfinity);
-}
-
-- (BOOL)pictureInPictureControllerIsPlaybackPaused:(AVPictureInPictureController*)pictureInPictureController
-{
-    return s_pipPaused;
-}
-
-- (void)pictureInPictureController:(AVPictureInPictureController*)pictureInPictureController
-          didTransitionToRenderSize:(CMVideoDimensions)newRenderSize
-{
-    overlay::AddLog("PiP render size: %d x %d", newRenderSize.width, newRenderSize.height);
-}
-
-- (void)pictureInPictureController:(AVPictureInPictureController*)pictureInPictureController
-                   skipByInterval:(CMTime)skipInterval
-                 completionHandler:(void (^)(void))completionHandler
-{
-    // There is nothing to skip in a live overlay, but the handler MUST be called
-    // or the system keeps the playback UI stuck in a "seeking" state.
-    completionHandler();
 }
 
 @end

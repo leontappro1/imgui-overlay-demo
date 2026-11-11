@@ -120,6 +120,26 @@ static overlay::PlatformHooks g_hooks;
         [label.centerYAnchor constraintEqualToAnchor:root.centerYAnchor]
     ]];
 
+    // A REAL, on-screen source view for video-call PiP. iOS uses this view's
+    // frame for the PiP transition/restore animation. It is a wide, shallow
+    // strip so both the inline preview and the system window read as a HUD
+    // bar rather than a square video tile. It sits below the transparent
+    // ImGui layer, so the app's own menu still renders above it.
+    UIView* pipSource = [[UIView alloc] init];
+    pipSource.backgroundColor = [UIColor clearColor];
+    pipSource.layer.cornerRadius = 10.0;
+    pipSource.clipsToBounds = YES;
+    pipSource.userInteractionEnabled = NO;
+    pipSource.translatesAutoresizingMaskIntoConstraints = NO;
+    [root addSubview:pipSource];
+    [NSLayoutConstraint activateConstraints:@[
+        [pipSource.leadingAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.leadingAnchor constant:14],
+        [pipSource.trailingAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.trailingAnchor constant:-14],
+        [pipSource.bottomAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.bottomAnchor constant:-18],
+        [pipSource.heightAnchor constraintEqualToConstant:76],
+    ]];
+    self.pipSourceView = pipSource;
+
     self.mtkView = [[MTKView alloc] initWithFrame:root.bounds device:self.device];
     self.mtkView.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
     self.mtkView.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
@@ -145,24 +165,6 @@ static overlay::PlatformHooks g_hooks;
     ]];
     self.pipButton = pipButton;
 
-    // A REAL on-screen source view for the PiP display layer. iOS silently
-    // refuses to start picture-in-picture when AVSampleBufferDisplayLayer is
-    // detached from the view hierarchy. This square also acts as a local
-    // preview: if the HUD is visible in it, frames are flowing correctly.
-    const CGFloat side = 132.0;
-    UIView* pipSource = [[UIView alloc]
-        initWithFrame:CGRectMake(14.0, root.bounds.size.height - side - 28.0, side, side)];
-    pipSource.backgroundColor       = [UIColor blackColor];
-    pipSource.layer.borderColor     = [UIColor colorWithWhite:0.85 alpha:0.55].CGColor;
-    pipSource.layer.borderWidth     = 1.0;
-    pipSource.layer.cornerRadius    = 8.0;
-    pipSource.clipsToBounds         = YES;
-    pipSource.userInteractionEnabled = NO;
-    pipSource.autoresizingMask      = UIViewAutoresizingFlexibleTopMargin |
-                                      UIViewAutoresizingFlexibleRightMargin;
-    [root addSubview:pipSource];
-    self.pipSourceView = pipSource;
-
     self.view = root;
     s_mtkView = self.mtkView;
 }
@@ -177,34 +179,37 @@ static overlay::PlatformHooks g_hooks;
     overlay::AddLog("device: %s", [[self.device name] UTF8String]);
 
     PipHudController* pip = [PipHudController sharedController];
-    [pip configureWithDevice:self.device queue:self.commandQueue];
 
     __weak AppViewController* weakSelf = self;
     pip.stateChanged = ^(BOOL active) {
         __strong AppViewController* strongSelf = weakSelf;
         if (!strongSelf) return;
+        strongSelf.pipButton.enabled = YES;
         [strongSelf.pipButton setTitle:active ? @"Stop HUD (PiP)"
                                               : @"> HUD above the screen (PiP)"
                               forState:UIControlStateNormal];
     };
 
-    overlay::AddLog("PiP overlay: %s",
-                    [AVPictureInPictureController isPictureInPictureSupported] ? "supported" : "NOT supported");
+    if (@available(iOS 15.0, *))
+        overlay::AddLog("PiP overlay: %s",
+                        [AVPictureInPictureController isPictureInPictureSupported] ? "supported" : "NOT supported");
+    else
+        overlay::AddLog("PiP overlay: needs iOS 15+");
 }
 
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
-    // The layer must be attached only once the view is really on screen.
-    [[PipHudController sharedController] attachToView:self.pipSourceView];
+    // The video-call PiP content source needs a view that is really on screen.
+    [[PipHudController sharedController] attachSourceView:self.pipSourceView];
 }
 
 - (void)viewDidLayoutSubviews
 {
     [super viewDidLayoutSubviews];
-    // Keep the layer's frame non-zero after rotation / safe-area changes.
+    // Keep the inline HUD strip in sync after rotation / safe-area changes.
     if (self.pipSourceView)
-        [[PipHudController sharedController] attachToView:self.pipSourceView];
+        [[PipHudController sharedController] attachSourceView:self.pipSourceView];
 }
 
 // ---------------------------------------------------------------- floating HUD
@@ -223,7 +228,10 @@ static overlay::PlatformHooks g_hooks;
     NSError* error = nil;
     if ([pip start:&error])
     {
-        [sender setTitle:@"Stop HUD (PiP)" forState:UIControlStateNormal];
+        // Do NOT claim PiP is active here: startPictureInPicture is
+        // asynchronous and can be a silent no-op. stateChanged is the only
+        // source of truth for the button title.
+        [sender setTitle:@"Starting HUD (PiP)..." forState:UIControlStateNormal];
     }
     else
     {

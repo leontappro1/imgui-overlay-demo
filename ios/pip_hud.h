@@ -1,17 +1,17 @@
-// Floating iOS overlay (Picture in Picture).
+// System-level floating HUD on iOS (iOS 15+).
 //
 // iOS has no API that lets a third-party app draw on top of another app.
 // The one thing the system DOES draw above everything else is a
-// picture-in-picture window. So we render our ImGui UI into an offscreen
-// CVPixelBuffer, push it through an AVSampleBufferDisplayLayer and let the
-// system float that layer above every other application.
+// picture-in-picture window. We use the video-call flavour of PiP
+// (AVPictureInPictureVideoCallViewController), which hosts a plain UIView
+// instead of a video player - so there are no player controls, no scrubber
+// and no "LIVE" badge.
 //
-// The frames are ours - no screen capture, no other app is touched.
+// The HUD is ours - no screen capture, no other app is touched.
 
 #pragma once
 
 #import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
 
 @class UIView;
 
@@ -21,13 +21,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (instancetype)sharedController;
 
-- (void)configureWithDevice:(id<MTLDevice>)device
-                     queue:(id<MTLCommandQueue>)queue;
-
-/// iOS refuses to start PiP unless the sample buffer display layer is part of
-/// a visible view hierarchy with a non-zero frame. Call this from
-/// viewDidAppear (and again from viewDidLayoutSubviews after a rotation).
-- (void)attachToView:(UIView*)hostView;
+/// The video-call PiP API requires a real, visible view in the app. Call this
+/// from viewDidAppear / viewDidLayoutSubviews; the HUD strip is added to it.
+- (void)attachSourceView:(UIView*)view;
 
 - (BOOL)isRunning;
 - (BOOL)isPictureInPictureActive;
@@ -37,9 +33,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// button in main.mm must follow this, NOT the return value of start:.
 @property (nonatomic, copy, nullable) void (^stateChanged)(BOOL active);
 
-/// Starts the picture-in-picture window. Returns NO and fills @p error on an
-/// immediate setup failure; a successful start is asynchronous and reported
-/// through stateChanged / the delegate callbacks.
+/// Starts the floating HUD. Returns NO on an immediate setup failure; a
+/// successful start is asynchronous and reported through stateChanged.
 - (BOOL)start:(NSError* _Nullable * _Nullable)error;
 
 - (void)stop;
