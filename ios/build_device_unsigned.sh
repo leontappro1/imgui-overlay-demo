@@ -28,9 +28,10 @@ cmake -S . -B build-dev -G Xcode \
 echo "==> xcodebuild (device, unsigned)"
 : > build-dev.log
 
-# -sdk is the reliable form for a CMake-generated project built with -target.
-# "-destination 'generic/platform=iOS'" together with -target made xcodebuild
-# exit 64 (EX_USAGE) on the macOS runner, so it is only a fallback with -scheme.
+# NOTE: "-derivedDataPath" is only accepted together with -scheme. Passing it
+# together with -target makes xcodebuild bail out with
+# "The flag -scheme, -testProductsPath, or -xctestrun is required when
+# specifying -derivedDataPath", so -scheme is the primary form here.
 run_xcodebuild() {
   xcodebuild \
     -project build-dev/ImGuiOverlayIOS.xcodeproj \
@@ -43,13 +44,24 @@ run_xcodebuild() {
     build 2>&1 | tee -a build-dev.log
 }
 
-if ! run_xcodebuild -target ImGuiOverlayIOS -sdk iphoneos; then
-  echo "==> -target/-sdk failed, retrying with -scheme/-destination" | tee -a build-dev.log
-  run_xcodebuild -scheme ImGuiOverlayIOS -destination 'generic/platform=iOS'
+if ! run_xcodebuild -scheme ImGuiOverlayIOS -destination 'generic/platform=iOS'; then
+  echo "==> -scheme failed, retrying with -target/-sdk (no -derivedDataPath)" | tee -a build-dev.log
+  xcodebuild \
+    -project build-dev/ImGuiOverlayIOS.xcodeproj \
+    -configuration Release \
+    -sdk iphoneos \
+    CODE_SIGNING_ALLOWED=NO \
+    CODE_SIGNING_REQUIRED=NO \
+    CODE_SIGN_IDENTITY="" \
+    -target ImGuiOverlayIOS \
+    build 2>&1 | tee -a build-dev.log
 fi
 
 # CMake's Xcode generator puts products in build-dev/Release/, not in DerivedData.
 APP=$(find build-dev -name '*.app' -type d -print -quit)
+if [ -z "$APP" ]; then
+  APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" -name 'ImGuiOverlayIOS.app' -type d -print -quit 2>/dev/null || true)
+fi
 if [ -z "$APP" ]; then
   echo "no .app produced, build tree:" >&2
   find build-dev -maxdepth 3 >&2

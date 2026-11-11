@@ -124,10 +124,10 @@ namespace
         (id)kCVPixelBufferPoolMinimumBufferCountKey : @(3),
     };
 
+    // CVPixelBufferPoolCreate(allocator, poolAttributes, pixelBufferAttributes, poolOut)
     CVPixelBufferPoolCreate(kCFAllocatorDefault,
                             (__bridge CFDictionaryRef)poolAttrs,
                             (__bridge CFDictionaryRef)attrs,
-                            NULL,
                             &_pixelPool);
 }
 
@@ -193,9 +193,9 @@ namespace
     // The sample buffer display layer needs a timebase to pace the frames.
     if (!self.timebase)
     {
-        CMTimebaseCreateWithMasterClock(kCFAllocatorDefault, CMClockGetHostTimeClock(), &_timebase);
+        CMTimebaseCreateWithSourceClock(kCFAllocatorDefault, CMClockGetHostTimeClock(), &_timebase);
         CMTimebaseSetTime(self.timebase, kCMTimeZero);
-        CMTimebaseSetRate(self.timebase, 1.0, 0);
+        CMTimebaseSetRate(self.timebase, 1.0);
         self.displayLayer.controlTimebase = self.timebase;
     }
 
@@ -336,9 +336,9 @@ namespace
     size_t height = CVPixelBufferGetHeight(pixelBuffer);
 
     CVMetalTextureRef metalTexture = NULL;
-    if (CVMetalTextureCacheCreateTexture(kCFAllocatorDefault, self.textureCache, pixelBuffer, NULL,
-                                         MTLPixelFormatBGRA8Unorm, width, height, 0,
-                                         &metalTexture) != kCVReturnSuccess)
+    if (CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, self.textureCache, pixelBuffer, NULL,
+                                                  MTLPixelFormatBGRA8Unorm, width, height, 0,
+                                                  &metalTexture) != kCVReturnSuccess)
     {
         CVPixelBufferRelease(pixelBuffer);
         return;
@@ -402,7 +402,11 @@ namespace
         timing.decodeTimeStamp         = kCMTimeInvalid;
 
         CMSampleBufferRef sampleBuffer = NULL;
+        // CMSampleBufferCreateForImageBuffer(allocator, imageBuffer, dataReady,
+        //                                      makeDataReadyCallback, makeDataReadyRefcon,
+        //                                      formatDescription, sampleTiming, sampleBufferOut)
         if (CMSampleBufferCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, true,
+                                                NULL, NULL,
                                                 formatDescription, &timing,
                                                 &sampleBuffer) == noErr)
         {
@@ -449,22 +453,37 @@ namespace
 }
 
 // AVPictureInPictureSampleBufferPlaybackDelegate
+// (AVKit/AVPictureInPictureController_AVSampleBufferDisplayLayerSupport.h)
 
-- (void)pictureInPictureController:(AVPictureInPictureController*)controller setPlaying:(BOOL)playing
+- (void)pictureInPictureController:(AVPictureInPictureController*)pictureInPictureController setPlaying:(BOOL)playing
 {
     if (playing) [self startTimer];
 }
 
-- (CMTimeRange)pictureInPictureController:(AVPictureInPictureController*)controller
-                     timeRangeForPlayback:(CMTimeRange)timeRange
+- (CMTimeRange)pictureInPictureControllerTimeRangeForPlayback:(AVPictureInPictureController*)pictureInPictureController
 {
-    if (CMTIME_IS_INVALID(self.firstPTS)) return CMTimeRangeMake(kCMTimeZero, kCMTimeZero);
+    // Live content: the system expects a range with infinite duration.
+    return CMTimeRangeMake(kCMTimeZero, kCMTimePositiveInfinity);
+}
 
-    CMTime duration = CMTimeSubtract(self.lastPTS, self.firstPTS);
-    if (CMTIME_IS_INVALID(duration) || CMTimeCompare(duration, kCMTimeZero) < 0)
-        duration = kCMTimeZero;
+- (BOOL)pictureInPictureControllerIsPlaybackPaused:(AVPictureInPictureController*)pictureInPictureController
+{
+    return s_pipPaused;
+}
 
-    return CMTimeRangeMake(self.firstPTS, duration);
+- (void)pictureInPictureController:(AVPictureInPictureController*)pictureInPictureController
+          didTransitionToRenderSize:(CMVideoDimensions)newRenderSize
+{
+    overlay::AddLog("PiP render size: %d x %d", newRenderSize.width, newRenderSize.height);
+}
+
+- (void)pictureInPictureController:(AVPictureInPictureController*)pictureInPictureController
+                   skipByInterval:(CMTime)skipInterval
+                 completionHandler:(void (^)(void))completionHandler
+{
+    // There is nothing to skip in a live overlay, but the handler MUST be called
+    // or the system keeps the playback UI stuck in a "seeking" state.
+    completionHandler();
 }
 
 @end

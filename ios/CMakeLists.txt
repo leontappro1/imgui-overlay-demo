@@ -56,6 +56,7 @@ target_link_libraries(ImGuiOverlayIOS PRIVATE
     "-framework CoreVideo"
     "-framework AVFoundation"
     "-framework AVKit"
+    "-framework AVFAudio"
 )
 
 set_target_properties(ImGuiOverlayIOS PROPERTIES
